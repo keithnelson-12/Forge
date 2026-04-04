@@ -1,0 +1,47 @@
+# Forge Container — docker-compose configuration
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in your values
+#   2. docker compose up -d
+#   3. Check logs: docker compose logs -f
+#
+# The container will auto-register with the Forge middleware on startup.
+
+services:
+  openclaw-container:
+    build: .
+    container_name: ${CONTAINER_ID:-openclaw-container}
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PLUGIN_PORT:-8080}:${PLUGIN_PORT:-8080}"
+    environment:
+      - FORGE_URL=${FORGE_URL}
+      - FORGE_API_KEY=${FORGE_API_KEY}
+      - CONTAINER_ID=${CONTAINER_ID}
+      - PROJECT_NAME=${PROJECT_NAME}
+      - REPO_URL=${REPO_URL}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - PLUGIN_PORT=${PLUGIN_PORT:-8080}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    # Mount a volume for persistent data (conversation history, cache, etc.)
+    volumes:
+      - container-data:/app/data
+    # Network: use host network if Forge is on the same machine,
+    # or a custom bridge if containers need to talk to each other.
+    # Uncomment the appropriate option:
+    #
+    # Option A: Host network (simplest — container sees host's network directly)
+    # network_mode: host
+    #
+    # Option B: Bridge network (containers isolated, use service names to communicate)
+    networks:
+      - forge-net
+
+volumes:
+  container-data:
+
+networks:
+  forge-net:
+    driver: bridge
