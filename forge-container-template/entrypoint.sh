@@ -27,7 +27,7 @@ fi
 echo "Registering with Forge at ${FORGE_URL}..."
 REGISTER_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${FORGE_URL}/forge/register" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: ${FORGE_API_KEY}" \
+  -H "x-forge-key: ${FORGE_API_KEY}" \
   -d "{
     \"container_id\": \"${CONTAINER_ID}\",
     \"project_name\": \"${PROJECT_NAME}\",

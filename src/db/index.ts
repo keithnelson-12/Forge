@@ -1,5 +1,9 @@
 import Database from 'better-sqlite3';
-import { config } from './config.js';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export interface ContainerRow {
   container_id: string;
@@ -16,42 +20,30 @@ export interface ContainerRow {
 export interface TaskMapRow {
   task_id: string;
   container_id: string;
-  project_name: string | null;
+  project_name: string;
   created_at: string;
 }
 
 let db: Database.Database;
 
-export function getDb(): Database.Database {
-  if (!db) {
-    db = new Database(config.dbPath);
-    db.pragma('journal_mode = WAL');
-    migrate(db);
-  }
+export function initDatabase(dbPath: string): Database.Database {
+  if (db) return db;
+
+  db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+
+  const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf-8');
+  db.exec(schema);
+
   return db;
 }
 
-function migrate(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS containers (
-      container_id TEXT PRIMARY KEY,
-      project_name TEXT NOT NULL,
-      repo_url TEXT NOT NULL,
-      host TEXT NOT NULL,
-      port INTEGER NOT NULL,
-      telegram_bot_token TEXT NOT NULL,
-      telegram_chat_id TEXT NOT NULL,
-      registered_at TEXT NOT NULL,
-      active INTEGER DEFAULT 1
-    );
-
-    CREATE TABLE IF NOT EXISTS task_map (
-      task_id TEXT PRIMARY KEY,
-      container_id TEXT NOT NULL REFERENCES containers(container_id),
-      project_name TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
+export function getDb(): Database.Database {
+  if (!db) {
+    throw new Error('Database not initialized — call initDatabase(dbPath) first');
+  }
+  return db;
 }
 
 export function getContainer(id: string): ContainerRow | undefined {
@@ -112,7 +104,7 @@ export function deleteContainer(id: string): boolean {
   return result.changes > 0;
 }
 
-export function mapTask(taskId: string, containerId: string, projectName: string | null): void {
+export function mapTask(taskId: string, containerId: string, projectName: string): void {
   getDb().prepare(`
     INSERT INTO task_map (task_id, container_id, project_name, created_at)
     VALUES (?, ?, ?, ?)

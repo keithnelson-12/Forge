@@ -1,16 +1,17 @@
-import { Router, Request, Response } from 'express';
-import { getAllContainers, getContainer, upsertContainer, updateContainer, deleteContainer } from '../db.js';
+import { Router, Request, Response, NextFunction } from 'express';
+import { getAllContainers, getContainer, upsertContainer, updateContainer, deleteContainer } from '../db/index.js';
 import { config } from '../config.js';
+import { ValidationError, NotFoundError } from '../errors.js';
 
 const router = Router();
 
 // POST /forge/register — register or update a container
-router.post('/register', async (req: Request, res: Response): Promise<void> => {
+router.post('/register', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
   const { container_id, project_name, repo_url, host, port, telegram_bot_token, telegram_chat_id } = req.body as Record<string, unknown>;
 
   if (!container_id || !project_name || !repo_url || !host || !port || !telegram_bot_token || !telegram_chat_id) {
-    res.status(400).json({ error: 'Missing required fields: container_id, project_name, repo_url, host, port, telegram_bot_token, telegram_chat_id' });
-    return;
+    throw new ValidationError('Missing required fields: container_id, project_name, repo_url, host, port, telegram_bot_token, telegram_chat_id');
   }
 
   // Ensure project exists in harness (ignore 409 conflict)
@@ -38,21 +39,24 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
   });
 
   res.json({ ok: true, container_id: container.container_id });
+  } catch (err) { next(err); }
 });
 
 // GET /forge/registry — list all containers
-router.get('/registry', (_req: Request, res: Response): void => {
-  const containers = getAllContainers();
-  res.json({ containers });
+router.get('/registry', (_req: Request, res: Response, next: NextFunction): void => {
+  try {
+    const containers = getAllContainers();
+    res.json({ containers });
+  } catch (err) { next(err); }
 });
 
 // POST /forge/registry/:container_id — update a container entry
-router.post('/registry/:container_id', (req: Request, res: Response): void => {
+router.post('/registry/:container_id', (req: Request, res: Response, next: NextFunction): void => {
+  try {
   const { container_id } = req.params;
   const existing = getContainer(container_id);
   if (!existing) {
-    res.status(404).json({ error: `Container ${container_id} not found` });
-    return;
+    throw new NotFoundError(`Container ${container_id} not found`);
   }
 
   const allowedFields = ['project_name', 'repo_url', 'host', 'port', 'telegram_bot_token', 'telegram_chat_id', 'active'];
@@ -65,17 +69,19 @@ router.post('/registry/:container_id', (req: Request, res: Response): void => {
 
   const updated = updateContainer(container_id, fields as Parameters<typeof updateContainer>[1]);
   res.json({ ok: true, container: updated });
+  } catch (err) { next(err); }
 });
 
 // DELETE /forge/registry/:container_id — soft-delete (deactivate) a container
-router.delete('/registry/:container_id', (req: Request, res: Response): void => {
+router.delete('/registry/:container_id', (req: Request, res: Response, next: NextFunction): void => {
+  try {
   const { container_id } = req.params;
   const ok = deleteContainer(container_id);
   if (!ok) {
-    res.status(404).json({ error: `Container ${container_id} not found` });
-    return;
+    throw new NotFoundError(`Container ${container_id} not found`);
   }
   res.json({ ok: true });
+  } catch (err) { next(err); }
 });
 
 export default router;

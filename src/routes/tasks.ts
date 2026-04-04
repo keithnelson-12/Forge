@@ -1,22 +1,26 @@
-import { Router, Request, Response } from 'express';
-import { getContainer, getAllContainers, mapTask } from '../db.js';
+import { Router, Request, Response, NextFunction } from 'express';
+import { getContainer, mapTask } from '../db/index.js';
 import { config } from '../config.js';
+import { AppError, ValidationError, NotFoundError } from '../errors.js';
 
 const router = Router();
 
 // POST /forge/request — submit a build request
-router.post('/request', async (req: Request, res: Response): Promise<void> => {
+router.post('/request', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
   const { container_id, description, is_new_project, type, build_mode, assignee } = req.body as Record<string, unknown>;
 
   if (!container_id || description === undefined || is_new_project === undefined) {
-    res.status(400).json({ error: 'Missing required fields: container_id, description, is_new_project' });
-    return;
+    throw new ValidationError('Missing required fields: container_id, description, is_new_project');
   }
 
   const container = getContainer(String(container_id));
   if (!container) {
-    res.status(404).json({ error: `Container ${container_id} not found in registry` });
-    return;
+    throw new NotFoundError(`Container ${container_id} not found in registry`);
+  }
+
+  if (!container.active) {
+    throw new AppError(`Container ${container_id} is inactive`, 403, 'FORBIDDEN');
   }
 
   const harnessBody: Record<string, unknown> = {
@@ -29,7 +33,6 @@ router.post('/request', async (req: Request, res: Response): Promise<void> => {
   if (build_mode !== undefined) harnessBody['build_mode'] = build_mode;
   if (assignee !== undefined) harnessBody['assignee'] = assignee;
 
-  let harnessRes: Response | undefined;
   let harnessData: Record<string, unknown>;
 
   try {
@@ -42,13 +45,17 @@ router.post('/request', async (req: Request, res: Response): Promise<void> => {
     harnessData = await resp.json() as Record<string, unknown>;
 
     if (!resp.ok) {
-      res.status(resp.status).json(harnessData);
-      return;
+      const errData = harnessData['error'] as Record<string, unknown> | undefined;
+      throw new AppError(
+        String(errData?.['message'] ?? `Harness returned ${resp.status}`),
+        resp.status,
+        String(errData?.['code'] ?? `ERR_${resp.status}`),
+      );
     }
   } catch (err) {
+    if (err instanceof AppError) throw err;
     console.error('[tasks] POST /v1/requests error:', err);
-    res.status(502).json({ error: 'Failed to reach harness' });
-    return;
+    throw new AppError('Failed to reach harness', 502, 'BAD_GATEWAY');
   }
 
   const task = harnessData['task'] as Record<string, unknown> | undefined;
@@ -63,19 +70,31 @@ router.post('/request', async (req: Request, res: Response): Promise<void> => {
     status: task?.['status'],
     queue_position: harnessData['queue_position'],
   });
+  } catch (err) { next(err); }
 });
 
 // GET /forge/status/:task_id — get one-line status
-router.get('/status/:task_id', async (req: Request, res: Response): Promise<void> => {
-  const { task_id } = req.params;
-
+router.get('/status/:task_id', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const resp = await fetch(`${config.harnessUrl}/v1/runs/${task_id}`);
-    const data = await resp.json() as Record<string, unknown>;
+    const { task_id } = req.params;
 
-    if (!resp.ok) {
-      res.status(resp.status).json(data);
-      return;
+    let data: Record<string, unknown>;
+    try {
+      const resp = await fetch(`${config.harnessUrl}/v1/runs/${task_id}`);
+      data = await resp.json() as Record<string, unknown>;
+
+      if (!resp.ok) {
+        const errData = data['error'] as Record<string, unknown> | undefined;
+        throw new AppError(
+          String(errData?.['message'] ?? `Harness returned ${resp.status}`),
+          resp.status,
+          String(errData?.['code'] ?? `ERR_${resp.status}`),
+        );
+      }
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      console.error('[tasks] GET /v1/runs/:task_id error:', err);
+      throw new AppError('Failed to reach harness', 502, 'BAD_GATEWAY');
     }
 
     const task = data['task'] as Record<string, unknown> | undefined;
@@ -87,93 +106,131 @@ router.get('/status/:task_id', async (req: Request, res: Response): Promise<void
       title: task?.['title'] ?? task?.['description'],
       project_name: project?.['name'],
     });
-  } catch (err) {
-    console.error('[tasks] GET /v1/runs error:', err);
-    res.status(502).json({ error: 'Failed to reach harness' });
-  }
+  } catch (err) { next(err); }
 });
 
 // GET /forge/tasks?container_id=x — list tasks for a container
-router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
+router.get('/tasks', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
   const container_id = req.query['container_id'] as string | undefined;
 
   if (!container_id) {
-    res.status(400).json({ error: 'Missing query parameter: container_id' });
-    return;
+    throw new ValidationError('Missing query parameter: container_id');
   }
 
   const container = getContainer(container_id);
   if (!container) {
-    res.status(404).json({ error: `Container ${container_id} not found in registry` });
-    return;
+    throw new NotFoundError(`Container ${container_id} not found in registry`);
   }
 
+  let data: Record<string, unknown>;
   try {
     const resp = await fetch(`${config.harnessUrl}/v1/runs`);
-    const data = await resp.json() as Record<string, unknown>;
+    data = await resp.json() as Record<string, unknown>;
 
     if (!resp.ok) {
-      res.status(resp.status).json(data);
-      return;
+      const errData = data['error'] as Record<string, unknown> | undefined;
+      throw new AppError(
+        String(errData?.['message'] ?? `Harness returned ${resp.status}`),
+        resp.status,
+        String(errData?.['code'] ?? `ERR_${resp.status}`),
+      );
     }
-
-    const runs = (data['runs'] as Record<string, unknown>[]) ?? [];
-
-    // Filter by project_name matching container's project
-    const filtered = runs.filter((run) => {
-      const project = run['project'] as Record<string, unknown> | undefined;
-      const task = run['task'] as Record<string, unknown> | undefined;
-      const projectName = project?.['name'] ?? task?.['project_name'];
-      return projectName === container.project_name;
-    });
-
-    const simplified = filtered.map((run) => {
-      const task = run['task'] as Record<string, unknown> | undefined;
-      const project = run['project'] as Record<string, unknown> | undefined;
-      return {
-        task_id: task?.['id'],
-        status: task?.['status'],
-        title: task?.['title'] ?? task?.['description'],
-        project_name: project?.['name'] ?? container.project_name,
-        created_at: task?.['created_at'],
-      };
-    });
-
-    res.json({ tasks: simplified });
   } catch (err) {
+    if (err instanceof AppError) throw err;
     console.error('[tasks] GET /v1/runs error:', err);
-    res.status(502).json({ error: 'Failed to reach harness' });
+    throw new AppError('Failed to reach harness', 502, 'BAD_GATEWAY');
   }
+
+  const runs = (data['runs'] as Record<string, unknown>[]) ?? [];
+
+  // Derive project_id by finding the first run whose project name matches,
+  // then filter all runs by that canonical project_id.
+  let projectId: string | undefined;
+  for (const run of runs) {
+    const project = run['project'] as Record<string, unknown> | undefined;
+    if (project?.['name'] === container.project_name && project?.['id']) {
+      projectId = String(project['id']);
+      break;
+    }
+  }
+
+  const filtered = runs.filter((run) => {
+    const project = run['project'] as Record<string, unknown> | undefined;
+    if (projectId) {
+      return project?.['id'] !== undefined && String(project['id']) === projectId;
+    }
+    // Fallback: no project_id found yet — keep runs matching by name
+    return project?.['name'] === container.project_name;
+  });
+
+  const simplified = filtered.map((run) => {
+    const task = run['task'] as Record<string, unknown> | undefined;
+    const project = run['project'] as Record<string, unknown> | undefined;
+    return {
+      task_id: task?.['id'],
+      status: task?.['status'],
+      title: task?.['title'] ?? task?.['description'],
+      project_name: project?.['name'] ?? container.project_name,
+      created_at: task?.['created_at'],
+    };
+  });
+
+  res.json({ tasks: simplified });
+  } catch (err) { next(err); }
 });
 
 // POST /forge/cancel/:task_id — cancel a task
-router.post('/cancel/:task_id', async (req: Request, res: Response): Promise<void> => {
-  const { task_id } = req.params;
-
+router.post('/cancel/:task_id', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const resp = await fetch(`${config.harnessUrl}/v1/orchestrator/cancel/${task_id}`, {
-      method: 'POST',
-    });
-    const data = await resp.json() as Record<string, unknown>;
-    res.status(resp.status).json(data);
-  } catch (err) {
-    console.error('[tasks] POST /v1/orchestrator/cancel error:', err);
-    res.status(502).json({ error: 'Failed to reach harness' });
-  }
+    const { task_id } = req.params;
+    let data: Record<string, unknown>;
+    try {
+      const resp = await fetch(`${config.harnessUrl}/v1/orchestrator/cancel/${task_id}`, {
+        method: 'POST',
+      });
+      data = await resp.json() as Record<string, unknown>;
+      if (!resp.ok) {
+        const errData = data['error'] as Record<string, unknown> | undefined;
+        throw new AppError(
+          String(errData?.['message'] ?? `Harness returned ${resp.status}`),
+          resp.status,
+          String(errData?.['code'] ?? `ERR_${resp.status}`),
+        );
+      }
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      console.error('[tasks] POST cancel error:', err);
+      throw new AppError('Failed to reach harness', 502, 'BAD_GATEWAY');
+    }
+    res.json(data);
+  } catch (err) { next(err); }
 });
 
 // POST /forge/stop — emergency stop
-router.post('/stop', async (_req: Request, res: Response): Promise<void> => {
+router.post('/stop', async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const resp = await fetch(`${config.harnessUrl}/v1/orchestrator/emergency-stop`, {
-      method: 'POST',
-    });
-    const data = await resp.json() as Record<string, unknown>;
-    res.status(resp.status).json(data);
-  } catch (err) {
-    console.error('[tasks] POST /v1/orchestrator/emergency-stop error:', err);
-    res.status(502).json({ error: 'Failed to reach harness' });
-  }
+    let data: Record<string, unknown>;
+    try {
+      const resp = await fetch(`${config.harnessUrl}/v1/orchestrator/emergency-stop`, {
+        method: 'POST',
+      });
+      data = await resp.json() as Record<string, unknown>;
+      if (!resp.ok) {
+        const errData = data['error'] as Record<string, unknown> | undefined;
+        throw new AppError(
+          String(errData?.['message'] ?? `Harness returned ${resp.status}`),
+          resp.status,
+          String(errData?.['code'] ?? `ERR_${resp.status}`),
+        );
+      }
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      console.error('[tasks] POST emergency-stop error:', err);
+      throw new AppError('Failed to reach harness', 502, 'BAD_GATEWAY');
+    }
+    res.json(data);
+  } catch (err) { next(err); }
 });
 
 export default router;

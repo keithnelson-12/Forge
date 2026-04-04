@@ -21,7 +21,7 @@ const PORT = process.env.PLUGIN_PORT || 8080;
 
 const headers = {
   "Content-Type": "application/json",
-  "X-API-Key": FORGE_API_KEY,
+  "x-forge-key": FORGE_API_KEY,
 };
 
 // Health check

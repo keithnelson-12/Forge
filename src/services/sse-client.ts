@@ -12,19 +12,27 @@ interface SsePayload {
 
 type ConnectionState = 'connecting' | 'connected' | 'reconnecting';
 
-let state: ConnectionState = 'connecting';
-let reconnectCount = 0;
-let lastConnectedAt: string | null = null;
-let lastErrorAt: string | null = null;
-
 export interface SseStatus {
-  connected: boolean;
-  reconnectAttempts: number;
   state: ConnectionState;
+  reconnectCount: number;
   lastConnectedAt: string | null;
   lastErrorAt: string | null;
   uptimeMs: number | null;
 }
+
+export interface EventSourceLike {
+  onopen: (() => void) | null;
+  onerror: ((err: unknown) => void) | null;
+  onmessage: ((event: MessageEvent) => void) | null;
+  addEventListener: (type: string, listener: (event: MessageEvent) => void) => void;
+}
+
+export type EventSourceFactory = (url: string) => EventSourceLike;
+
+let state: ConnectionState = 'connecting';
+let reconnectCount = 0;
+let lastConnectedAt: string | null = null;
+let lastErrorAt: string | null = null;
 
 export function getSseStatus(): SseStatus {
   const uptimeMs =
@@ -33,16 +41,15 @@ export function getSseStatus(): SseStatus {
       : null;
 
   return {
-    connected: state === 'connected',
-    reconnectAttempts: reconnectCount,
     state,
+    reconnectCount,
     lastConnectedAt,
     lastErrorAt,
     uptimeMs,
   };
 }
 
-export function handleEvent(eventType: string, data: string): void {
+function handleEvent(eventType: string, data: string): void {
   let parsed: SsePayload;
   try {
     parsed = JSON.parse(data) as SsePayload;
@@ -55,7 +62,6 @@ export function handleEvent(eventType: string, data: string): void {
 
   if (eventType === 'orchestrator:emergency_stop') {
     const containers = getActiveContainers();
-    console.log(`[sse] Emergency stop — notifying ${containers.length} active container(s)`);
     notifyEmergencyStop(containers).catch((err) =>
       console.error('[sse] notifyEmergencyStop error:', err)
     );
@@ -79,8 +85,6 @@ export function handleEvent(eventType: string, data: string): void {
     return;
   }
 
-  console.log(`[sse] ${eventType} for task ${taskId} → container ${container.container_id} (${container.project_name})`);
-
   if (eventType === 'task:completed') {
     notifyComplete(container, taskId).catch((err) =>
       console.error('[sse] notifyComplete error:', err)
@@ -99,11 +103,14 @@ export function handleEvent(eventType: string, data: string): void {
   }
 }
 
-export function connectToHarness(): void {
+export function connectToHarness(esFactory?: EventSourceFactory): void {
   const url = `${config.harnessUrl}/v1/events/stream`;
   console.log(`[sse] Connecting to harness SSE at ${url}`);
 
-  const es = new EventSource(url);
+  const es: EventSourceLike = esFactory
+    ? esFactory(url)
+    : (new EventSource(url) as unknown as EventSourceLike);
+
   state = 'connecting';
   reconnectCount = 0;
 
@@ -125,10 +132,14 @@ export function connectToHarness(): void {
     if (state === 'connected') {
       state = 'reconnecting';
       reconnectCount = 1;
+      console.error(`[sse][${now}] Disconnected (reconnect #${reconnectCount})`, err);
+    } else if (state === 'reconnecting') {
+      reconnectCount += 1;
+      console.error(`[sse][${now}] Disconnected (reconnect #${reconnectCount})`, err);
     } else {
       reconnectCount += 1;
+      console.error(`[sse][${now}] Disconnected (reconnect #${reconnectCount})`, err);
     }
-    console.error(`[sse][${now}] Disconnected (reconnect #${reconnectCount})`, err);
   };
 
   const trackedEvents = ['task:completed', 'task:failed', 'task:canceled', 'orchestrator:emergency_stop'];

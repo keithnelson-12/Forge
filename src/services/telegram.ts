@@ -1,4 +1,4 @@
-import { ContainerRow } from '../db.js';
+import { ContainerRow } from '../db/index.js';
 
 export async function sendNotification(botToken: string, chatId: string, message: string): Promise<void> {
   try {
