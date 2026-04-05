@@ -2,6 +2,10 @@
 #
 # Based on the standard OpenClaw container image with the thin Forge plugin
 # pre-installed. Each repo gets its own container with its own Telegram bot.
+#
+# BUILD CONTEXT: must be the monorepo root, not this directory.
+#   docker build -f forge-container-template/Dockerfile .
+#   docker compose (see docker-compose.yml) sets context: .. automatically.
 
 FROM node:20-slim
 
@@ -14,8 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy the thin plugin
-COPY plugin/ ./plugin/
+# Copy the canonical lossless-harness plugin from the monorepo root.
+# Source of truth is plugins/lossless-harness/ — do not maintain a separate copy.
+COPY plugins/lossless-harness/ ./plugin/
 RUN cd plugin && npm install --production
 
 # Copy the container entrypoint

@@ -9,7 +9,10 @@
 
 services:
   openclaw-container:
-    build: .
+    build:
+      # Build context is the monorepo root so Docker can COPY plugins/lossless-harness/
+      context: ..
+      dockerfile: forge-container-template/Dockerfile
     container_name: ${CONTAINER_ID:-openclaw-container}
     restart: unless-stopped
     env_file: .env
