@@ -8,7 +8,7 @@ const router = Router();
 // POST /forge/request — submit a build request
 router.post('/request', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-  const { container_id, description, is_new_project, type, build_mode, assignee } = req.body as Record<string, unknown>;
+  const { container_id, description, is_new_project, type, build_mode, assignee, pm_task_id } = req.body as Record<string, unknown>;
 
   if (!container_id || description === undefined || is_new_project === undefined) {
     throw new ValidationError('Missing required fields: container_id, description, is_new_project');
@@ -23,8 +23,17 @@ router.post('/request', async (req: Request, res: Response, next: NextFunction):
     throw new AppError(`Container ${container_id} is inactive`, 403, 'FORBIDDEN');
   }
 
+  // Enforce project scope — prepend project context so DH knows exactly
+  // which project this task belongs to. The bot cannot override this.
+  const scopedDescription = [
+    `[PROJECT SCOPE: ${container.project_name} — repo: ${container.repo_url}]`,
+    `All work MUST target this project only. Do NOT reference or modify files outside this repository.`,
+    ``,
+    String(description),
+  ].join('\n');
+
   const harnessBody: Record<string, unknown> = {
-    description,
+    description: scopedDescription,
     project_name: container.project_name,
     repo_url: container.repo_url,
     is_new_project,
@@ -32,6 +41,7 @@ router.post('/request', async (req: Request, res: Response, next: NextFunction):
   if (type !== undefined) harnessBody['type'] = type;
   if (build_mode !== undefined) harnessBody['build_mode'] = build_mode;
   if (assignee !== undefined) harnessBody['assignee'] = assignee;
+  if (pm_task_id !== undefined) harnessBody['pm_task_id'] = pm_task_id;
 
   let harnessData: Record<string, unknown>;
 
