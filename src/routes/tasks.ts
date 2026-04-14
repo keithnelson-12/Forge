@@ -8,10 +8,14 @@ const router = Router();
 // POST /forge/request — submit a build request
 router.post('/request', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-  const { container_id, description, is_new_project, type, build_mode, assignee, pm_task_id } = req.body as Record<string, unknown>;
+  const { container_id, description, assignee, pm_task_id, pm_subtask_id } = req.body as Record<string, unknown>;
 
-  if (!container_id || description === undefined || is_new_project === undefined) {
-    throw new ValidationError('Missing required fields: container_id, description, is_new_project');
+  if (!container_id || description === undefined) {
+    throw new ValidationError('Missing required fields: container_id, description');
+  }
+
+  if (pm_task_id && pm_subtask_id) {
+    throw new ValidationError('pm_task_id and pm_subtask_id are mutually exclusive — provide one or the other, not both');
   }
 
   const container = getContainer(String(container_id));
@@ -32,16 +36,16 @@ router.post('/request', async (req: Request, res: Response, next: NextFunction):
     String(description),
   ].join('\n');
 
+  // Slim request body — project_name is the source of truth, repo_url/is_new_project
+  // are derived from the registered project on the DH side, type/workflow/build_mode
+  // are auto-determined by triage, auto_approve is always on.
   const harnessBody: Record<string, unknown> = {
     description: scopedDescription,
     project_name: container.project_name,
-    repo_url: container.repo_url,
-    is_new_project,
   };
-  if (type !== undefined) harnessBody['type'] = type;
-  if (build_mode !== undefined) harnessBody['build_mode'] = build_mode;
   if (assignee !== undefined) harnessBody['assignee'] = assignee;
   if (pm_task_id !== undefined) harnessBody['pm_task_id'] = pm_task_id;
+  if (pm_subtask_id !== undefined) harnessBody['pm_subtask_id'] = pm_subtask_id;
 
   let harnessData: Record<string, unknown>;
 
